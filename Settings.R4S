@@ -1,0 +1,6 @@
+# NetR4pDiag repository path mappings. Relative to this repository root.
+SDK_ROOT=../../SDK
+CONTRACT_ROOT=../../Contract
+DEVKIT_ROOT=../../../DevKit
+ARTIFACTS_ROOT=../../../Artifacts/Modules/NetR4pDiag
+ZIG_ROOT=Toolchains/Zig
