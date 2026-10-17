@@ -1,6 +1,6 @@
 const r4os = @import("r4os");
 
-const role_count: usize = 9;
+const role_count: usize = 8;
 
 const App = struct {
     sys: r4os.r4sys.Context,
@@ -34,6 +34,10 @@ pub fn r4_app_main(r4_app: *r4os.App) i32 {
     const args = trim(zSlice(app.sys.argsRaw()));
     const selftest_mode = isSelfTestMode(args);
     const expected_missing = if (selftest_mode) null else expectedMissingRole(args);
+    if (args.len != 0 and !selftest_mode and expected_missing == null) {
+        app.sys.println("NETR4P: unknown option; use /SELFTEST or /EXPECT-MISSING=<network role>");
+        return 2;
+    }
 
     var detail: r4os.abi.NetDetailSnapshot = .{};
     _ = app.net.netDetailGet(0, &detail);
@@ -241,8 +245,6 @@ fn isSelfTestMode(args: []const u8) bool {
 }
 
 fn expectedMissingRole(args: []const u8) ?usize {
-    if (equalsIgnoreCase(args, "/MISSING-R4SL")) return 8;
-    if (equalsIgnoreCase(args, "MISSING-R4SL")) return 8;
     if (startsWithIgnoreCase(args, "/EXPECT-MISSING=")) return roleFromName(args["/EXPECT-MISSING=".len..]);
     if (startsWithIgnoreCase(args, "EXPECT-MISSING=")) return roleFromName(args["EXPECT-MISSING=".len..]);
     if (startsWithIgnoreCase(args, "/MISSING-")) return roleFromName(args["/MISSING-".len..]);
@@ -259,7 +261,6 @@ fn roleFromName(value: []const u8) ?usize {
     if (equalsIgnoreCase(value, "net.dhcp") or equalsIgnoreCase(value, "NETDHCP") or equalsIgnoreCase(value, "NETDHCP.R4P")) return 5;
     if (equalsIgnoreCase(value, "net.dns") or equalsIgnoreCase(value, "NETDNS") or equalsIgnoreCase(value, "NETDNS.R4P")) return 6;
     if (equalsIgnoreCase(value, "net.tcp") or equalsIgnoreCase(value, "NETTCP") or equalsIgnoreCase(value, "NETTCP.R4P")) return 7;
-    if (equalsIgnoreCase(value, "net.serial_link") or equalsIgnoreCase(value, "NETR4SL") or equalsIgnoreCase(value, "NETR4SL.R4P") or equalsIgnoreCase(value, "R4SL")) return 8;
     return null;
 }
 
@@ -273,7 +274,7 @@ fn protocolIndex(role: usize) usize {
         5 => r4os.abi.net_detail_protocol_dhcp,
         6 => r4os.abi.net_detail_protocol_dns,
         7 => r4os.abi.net_detail_protocol_tcp,
-        else => r4os.abi.net_detail_protocol_serial_link,
+        else => unreachable,
     };
 }
 
@@ -287,7 +288,7 @@ fn roleName(role: usize) []const u8 {
         5 => "net.dhcp",
         6 => "net.dns",
         7 => "net.tcp",
-        else => "net.serial_link",
+        else => unreachable,
     };
 }
 

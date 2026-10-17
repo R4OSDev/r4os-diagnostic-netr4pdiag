@@ -4,7 +4,7 @@
 
 ## Package
 
-- Version: `0.1.2`
+- Version: `0.1.3`
 - Image target: `/R4OS/SOFTWARE/TERMINAL/DIAG/NETR4P.R4X`
 - Image scope: `test`
 - Canonical project manifest: `module.R4MF`
@@ -38,3 +38,9 @@ Detailed German technical notes from the migration are preserved in
 Original R4OS material is licensed under Apache License 2.0. See `LICENSE`
 and `NOTICE`. Any repository-specific external material is documented in
 `THIRD_PARTY_NOTICES.md`.
+
+Since0.84.34 the current diagnostic counts exactly eight active network roles.
+SerialLink is retired and its old aliases are removed. The fixed ninth ABI
+snapshot position is reserved; it is not an active or required protocol.
+Unknown command options fail explicitly. Existing /SELFTEST and remaining
+/EXPECT-MISSING=<network role> checks preserve their network assertions.
