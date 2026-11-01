@@ -22,7 +22,13 @@ Wichtige Aufrufe im R4OS-Terminal:
   einschliesslich Angebotszahl anzeigen.
 - NETR4P /BENCHREAD: nach R4SRV-Registrierung /api/v1/hosts ueber
   geprueftes HTTPS lesen. Es werden nur Status und Laenge ausgegeben.
+- NETR4P /BENCHPUT=HOST,ID,C:\\TEMP\\HOST.JSON bzw. SPECTRA oder SNES:
+  eine vorhandene unveraenderte JSON-Datei nach R4SRV-Registrierung mit
+  getrenntem Benchmark-Bearer ueber TLS und fester Content-Length senden.
+  Die ID muss mit dem Originaldokument uebereinstimmen. Ein ungewisses PUT
+  wird nie automatisch wiederholt; Originalbytes und UUID erhalten und
+  den Serverzustand vor bewusstem identischem Retry abfragen.
 
-/UPDATESEARCH und /BENCHREAD dienen der Integration. Sie laden keine
+/UPDATESEARCH und /BENCHREAD dienen der lesenden Integration. Sie laden keine
 Pakete herunter, installieren nichts und schreiben keine Benchmarkdaten.
 Ein HTTP 200 im Health-Check belegt keine erfolgreiche Registrierung.

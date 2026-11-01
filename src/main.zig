@@ -42,6 +42,7 @@ pub fn r4_app_main(r4_app: *r4os.App) i32 {
     if (equalsIgnoreCase(args, "/SERVERACCESS=BENCHMARKS")) return serverAccess(r4_app, &app, .benchmarks);
     if (equalsIgnoreCase(args, "/UPDATESEARCH")) return updateSearch(r4_app, &app);
     if (equalsIgnoreCase(args, "/BENCHREAD")) return benchmarkRead(r4_app, &app);
+    if (startsWithIgnoreCase(args, "/BENCHPUT=")) return @import("benchmark_transfer.zig").run(r4_app, args["/BENCHPUT=".len..]);
     if (equalsIgnoreCase(args, "/TLSSELFTEST")) return tlsSelfTest(r4_app, &app);
     const selftest_mode = isSelfTestMode(args);
     const expected_missing = if (selftest_mode) null else expectedMissingRole(args);
@@ -249,7 +250,8 @@ fn updateSearch(r4_app: *r4os.App, app: *const App) i32 {
         }
         if (status.state == @intFromEnum(update_contract.State.up_to_date) or
             status.state == @intFromEnum(update_contract.State.available) or
-            status.state == @intFromEnum(update_contract.State.failed)) {
+            status.state == @intFromEnum(update_contract.State.failed))
+        {
             app.sys.write("NETR4P update search: state=");
             app.sys.printU64(status.state);
             app.sys.write(" result=");
