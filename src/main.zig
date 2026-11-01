@@ -1,5 +1,6 @@
 const std = @import("std");
 const r4os = @import("r4os");
+const update_contract = @import("update_service_contract");
 
 const role_count: usize = 8;
 
@@ -37,6 +38,10 @@ pub fn r4_app_main(r4_app: *r4os.App) i32 {
     if (equalsIgnoreCase(args, "/SERVERPROBE=BENCHMARKS")) return serverProbe(r4_app, &app, .benchmarks);
     if (equalsIgnoreCase(args, "/SERVERREGISTER=UPDATES")) return serverRegister(r4_app, &app, .updates);
     if (equalsIgnoreCase(args, "/SERVERREGISTER=BENCHMARKS")) return serverRegister(r4_app, &app, .benchmarks);
+    if (equalsIgnoreCase(args, "/SERVERACCESS=UPDATES")) return serverAccess(r4_app, &app, .updates);
+    if (equalsIgnoreCase(args, "/SERVERACCESS=BENCHMARKS")) return serverAccess(r4_app, &app, .benchmarks);
+    if (equalsIgnoreCase(args, "/UPDATESEARCH")) return updateSearch(r4_app, &app);
+    if (equalsIgnoreCase(args, "/BENCHREAD")) return benchmarkRead(r4_app, &app);
     if (equalsIgnoreCase(args, "/TLSSELFTEST")) return tlsSelfTest(r4_app, &app);
     const selftest_mode = isSelfTestMode(args);
     const expected_missing = if (selftest_mode) null else expectedMissingRole(args);
@@ -170,6 +175,149 @@ fn serverRegister(r4_app: *r4os.App, app: *const App, component: r4os.server_tar
         .failure => |failure| app.sys.println(@tagName(failure)),
     }
     return 1;
+}
+
+fn serverAccess(r4_app: *r4os.App, app: *const App, component: r4os.server_targets.Component) i32 {
+    const services = r4_app.services() orelse {
+        app.sys.println("NETR4P R4SRV: service API unavailable");
+        return 1;
+    };
+    const client = r4os.server_access.Client{ .services = services };
+    const result = client.ensure(component);
+    app.sys.write("NETR4P R4SRV ");
+    app.sys.write(if (component == .updates) "updates " else "benchmarks ");
+    switch (result) {
+        .response => |response| {
+            app.sys.write("code=");
+            app.sys.printI32(response.code);
+            app.sys.write(" attempted=");
+            app.sys.printU64(response.attempted);
+            app.sys.write(" generation=");
+            app.sys.printU64(response.generation);
+            app.sys.println("");
+            return if (response.code == @intFromEnum(r4os.server_access.Code.ok)) 0 else 1;
+        },
+        .unavailable => |raw| {
+            app.sys.write("unavailable rc=");
+            app.sys.printI32(raw);
+        },
+        .timed_out => app.sys.write("timed_out"),
+        .malformed => app.sys.write("malformed"),
+    }
+    app.sys.println("");
+    return 1;
+}
+
+fn updateSearch(r4_app: *r4os.App, app: *const App) i32 {
+    const services = r4_app.services() orelse return 1;
+    var connection = switch (services.open(update_contract.service_name)) {
+        .connection => |value| value,
+        .failure => |raw| {
+            app.sys.write("NETR4P update search: service unavailable rc=");
+            app.sys.printI32(raw);
+            app.sys.println("");
+            return 1;
+        },
+    };
+    defer _ = connection.close();
+    const timeout = r4os.time_contract.timeoutFinite(r4os.time_contract.durationFromNanoseconds(5_000_000_000));
+    const submit = update_contract.CommandRequest{};
+    const ack = switch (connection.callTyped(update_contract.CommandRequest, update_contract.Ack, update_contract.op_search, &submit, timeout)) {
+        .value => |value| value,
+        else => {
+            app.sys.println("NETR4P update search: submit failed");
+            return 1;
+        },
+    };
+    if (!ack.valid() or ack.result != update_contract.result_ok or ack.job_id == 0) {
+        app.sys.println("NETR4P update search: rejected");
+        return 1;
+    }
+    const deadline = app.sys.ticks() +| app.sys.ticksFromMilliseconds(45_000);
+    while (app.sys.ticks() < deadline) {
+        const request = update_contract.StatusRequest{ .job_id = ack.job_id };
+        const status = switch (connection.callTyped(update_contract.StatusRequest, update_contract.Status, update_contract.op_status, &request, timeout)) {
+            .value => |value| value,
+            else => {
+                app.sys.println("NETR4P update search: status failed");
+                return 1;
+            },
+        };
+        if (!status.valid() or status.job_id != ack.job_id) {
+            app.sys.println("NETR4P update search: malformed status");
+            return 1;
+        }
+        if (status.state == @intFromEnum(update_contract.State.up_to_date) or
+            status.state == @intFromEnum(update_contract.State.available) or
+            status.state == @intFromEnum(update_contract.State.failed)) {
+            app.sys.write("NETR4P update search: state=");
+            app.sys.printU64(status.state);
+            app.sys.write(" result=");
+            app.sys.printI32(status.result);
+            app.sys.write(" packages=");
+            app.sys.printU64(status.package_count);
+            app.sys.write(" reason=");
+            app.sys.println(status.reasonText());
+            return if (status.result == update_contract.result_ok and
+                status.state != @intFromEnum(update_contract.State.failed)) 0 else 1;
+        }
+        app.sys.sleepTicks(5);
+    }
+    app.sys.println("NETR4P update search: timeout");
+    return 1;
+}
+
+fn benchmarkRead(r4_app: *r4os.App, app: *const App) i32 {
+    const services = r4_app.services() orelse return 1;
+    const client = r4os.server_access.Client{ .services = services };
+    const target = switch (client.ensure(.benchmarks)) {
+        .response => |value| value,
+        else => {
+            app.sys.println("NETR4P benchmark read: registration unavailable");
+            return 1;
+        },
+    };
+    if (target.code != @intFromEnum(r4os.server_access.Code.ok) or target.port == 0) {
+        app.sys.write("NETR4P benchmark read: registration code=");
+        app.sys.printI32(target.code);
+        app.sys.println("");
+        return 1;
+    }
+    var url_buffer: [96]u8 = undefined;
+    const url = std.fmt.bufPrint(&url_buffer, "https://{d}.{d}.{d}.{d}:{d}/api/v1/hosts", .{
+        target.target_ip[0], target.target_ip[1], target.target_ip[2], target.target_ip[3], target.port,
+    }) catch return 1;
+    var web = r4_app.web() orelse return 1;
+    var raw_response: [16 * 1024]u8 = undefined;
+    var body: [16 * 1024]u8 = undefined;
+    var scratch: [r4os.app_web.tls_scratch_bytes]u8 = undefined;
+    const result = web.fetch(url, &raw_response, &body, &scratch, .{
+        .redirect = .error_mode,
+        .redirect_limit = 0,
+        .headers = "accept:application/json\n",
+    });
+    switch (result) {
+        .response => |response| {
+            const trimmed = std.mem.trim(u8, response.body, " \t\r\n");
+            app.sys.write("NETR4P benchmark read: HTTP ");
+            app.sys.printU64(response.status);
+            app.sys.write(" TLS=");
+            app.sys.printU64(@intFromBool(response.secure));
+            app.sys.write(" bytes=");
+            app.sys.printU64(response.body.len);
+            app.sys.write(" registration_attempted=");
+            app.sys.printU64(target.attempted);
+            app.sys.write(" generation=");
+            app.sys.printU64(target.generation);
+            app.sys.println("");
+            return if (response.status == 200 and response.secure and trimmed.len > 0 and trimmed[0] == '{') 0 else 1;
+        },
+        .failure => |failure| {
+            app.sys.write("NETR4P benchmark read: ");
+            app.sys.println(@tagName(failure));
+            return 1;
+        },
+    }
 }
 
 fn collectTotals(detail: r4os.abi.NetDetailSnapshot) Totals {
