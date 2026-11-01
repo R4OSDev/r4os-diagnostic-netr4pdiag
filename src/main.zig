@@ -1,3 +1,4 @@
+const std = @import("std");
 const r4os = @import("r4os");
 
 const role_count: usize = 8;
@@ -32,6 +33,11 @@ const Totals = struct {
 pub fn r4_app_main(r4_app: *r4os.App) i32 {
     var app = App.init(r4_app) orelse return r4os.abi.err_no_group;
     const args = trim(zSlice(app.sys.argsRaw()));
+    if (equalsIgnoreCase(args, "/SERVERPROBE=UPDATES")) return serverProbe(r4_app, &app, .updates);
+    if (equalsIgnoreCase(args, "/SERVERPROBE=BENCHMARKS")) return serverProbe(r4_app, &app, .benchmarks);
+    if (equalsIgnoreCase(args, "/SERVERREGISTER=UPDATES")) return serverRegister(r4_app, &app, .updates);
+    if (equalsIgnoreCase(args, "/SERVERREGISTER=BENCHMARKS")) return serverRegister(r4_app, &app, .benchmarks);
+    if (equalsIgnoreCase(args, "/TLSSELFTEST")) return tlsSelfTest(r4_app, &app);
     const selftest_mode = isSelfTestMode(args);
     const expected_missing = if (selftest_mode) null else expectedMissingRole(args);
     if (args.len != 0 and !selftest_mode and expected_missing == null) {
@@ -58,6 +64,112 @@ pub fn r4_app_main(r4_app: *r4os.App) i32 {
     }
     app.sys.println(if (ok) "ok" else "failed");
     return if (ok) 0 else 1;
+}
+
+fn tlsSelfTest(r4_app: *r4os.App, app: *const App) i32 {
+    const dev = r4_app.devicesLowLevel() orelse return 1;
+    var input: [1]u8 = .{0};
+    var output: [512]u8 = undefined;
+    const request = r4os.abi.ProtocolBuffer{ .data = &input, .len = 0, .capacity = input.len };
+    var result = r4os.abi.ProtocolBuffer{ .data = &output, .len = 0, .capacity = output.len };
+    const rc = dev.protocolDispatch("security.tls", 3, &request, &result);
+    const expected = "R4TLS selftest OK;live=ok;client=ok;x509=ok;app_write=ok;app_read=ok";
+    const ok = rc == 0 and result.len <= output.len and std.mem.eql(u8, output[0..result.len], expected);
+    app.sys.write("NETR4P TLS selftest: ");
+    app.sys.write(if (ok) "OK" else "FAILED");
+    app.sys.write(" rc=");
+    app.sys.printI32(rc);
+    app.sys.println("");
+    return if (ok) 0 else 1;
+}
+
+fn serverProbe(r4_app: *r4os.App, app: *const App, component: r4os.server_targets.Component) i32 {
+    const profile = r4os.server_profile.load(&app.sys) catch |err| {
+        app.sys.write("NETR4P server profile: ");
+        app.sys.println(@errorName(err));
+        return 1;
+    };
+    const target = r4os.server_targets.read(&app.sys, component) catch |err| {
+        app.sys.write("NETR4P server target: ");
+        app.sys.println(@errorName(err));
+        return 1;
+    };
+    var url_buffer: [96]u8 = undefined;
+    const url = std.fmt.bufPrint(&url_buffer, "https://{s}:{d}/api/health", .{ target.host(), target.port }) catch return 1;
+    var web = r4_app.web() orelse {
+        app.sys.println("NETR4P server probe: web unavailable");
+        return 1;
+    };
+    var raw_response: [4096]u8 = undefined;
+    var body: [1024]u8 = undefined;
+    var tls_scratch: [r4os.app_web.tls_scratch_bytes]u8 = undefined;
+    const result = web.fetch(url, &raw_response, &body, &tls_scratch, .{
+        .redirect = .error_mode,
+        .redirect_limit = 0,
+    });
+    app.sys.write("NETR4P server probe ");
+    app.sys.write(if (component == .updates) "updates " else "benchmarks ");
+    app.sys.write(if (profile == .public) "PUBLIC " else "LAN ");
+    app.sys.write(target.host());
+    app.sys.write(":");
+    app.sys.printU64(target.port);
+    app.sys.write(" ");
+    switch (result) {
+        .response => |response| {
+            app.sys.write("HTTP ");
+            app.sys.printI32(response.status);
+            app.sys.println(if (response.secure) " TLS" else " plaintext");
+            return if (response.status == 200 and response.secure) 0 else 1;
+        },
+        .failure => |failure| {
+            app.sys.println(@tagName(failure));
+            return 1;
+        },
+    }
+}
+
+fn serverRegister(r4_app: *r4os.App, app: *const App, component: r4os.server_targets.Component) i32 {
+    const profile = r4os.server_profile.load(&app.sys) catch |err| {
+        app.sys.write("NETR4P server profile: ");
+        app.sys.println(@errorName(err));
+        return 1;
+    };
+    const target = r4os.server_targets.read(&app.sys, component) catch |err| {
+        app.sys.write("NETR4P server target: ");
+        app.sys.println(@errorName(err));
+        return 1;
+    };
+    var secret = r4os.server_credentials.load(&app.sys, .registration) catch |err| {
+        app.sys.write("NETR4P server credentials: ");
+        app.sys.println(@errorName(err));
+        return 1;
+    };
+    defer secret.clear();
+    var web = r4_app.web() orelse {
+        app.sys.println("NETR4P server registration: web unavailable");
+        return 1;
+    };
+    var scratch: [r4os.app_web.tls_scratch_bytes]u8 = undefined;
+    const timeout = r4os.time_contract.timeoutFinite(r4os.time_contract.durationFromNanoseconds(8_000_000_000));
+    const result = web.registerServer(.{
+        .address = target.ip,
+        .hostname = target.host(),
+        .port = r4os.server_targets.registration_port,
+        .tls = profile.registrationUsesTls(),
+    }, secret.bytes(), &scratch, timeout);
+    app.sys.write("NETR4P server registration ");
+    app.sys.write(if (component == .updates) "updates " else "benchmarks ");
+    app.sys.write(if (profile == .public) "PUBLIC " else "LAN ");
+    switch (result) {
+        .accepted => {
+            app.sys.println("OK");
+            return 0;
+        },
+        .invalid_secret => app.sys.println("InvalidSecret"),
+        .invalid_reply => app.sys.println("InvalidReply"),
+        .failure => |failure| app.sys.println(@tagName(failure)),
+    }
+    return 1;
 }
 
 fn collectTotals(detail: r4os.abi.NetDetailSnapshot) Totals {
