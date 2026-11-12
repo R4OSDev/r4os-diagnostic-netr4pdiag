@@ -4,7 +4,7 @@
 
 ## Package
 
-- Version: `0.1.3`
+- Version: `0.1.11`
 - Image target: `/R4OS/SOFTWARE/TERMINAL/DIAG/NETR4P.R4X`
 - Image scope: `test`
 - Canonical project manifest: `module.R4MF`
@@ -44,3 +44,7 @@ SerialLink is retired and its old aliases are removed. The fixed ninth ABI
 snapshot position is reserved; it is not an active or required protocol.
 Unknown command options fail explicitly. Existing /SELFTEST and remaining
 /EXPECT-MISSING=<network role> checks preserve their network assertions.
+
+## Generation 2
+
+The normal Start2/Query2 diagnostic uses the shared UTF8 argument cursor while preserving its server, TLS, benchmark and missing-role options. `/SELFTEST` first builds and independently checks real DNS R4P query bytes to activate the lazy module; the original eight-role assertions stay strict. Benchmark PUT uses full metadata and the shared borrowed path reader under one source deadline, exact offsets and metadata/revision checks; the existing 64 MB limit remains. Source bytes stay live until the web stream closes. R4P wire operations remain owned by their protocols.

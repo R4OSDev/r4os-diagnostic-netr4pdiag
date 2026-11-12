@@ -1,4 +1,4 @@
-NETR4P.R4X
+﻿NETR4P.R4X
 ==========
 
 NETR4P ist die Netzwerk- und R4OS-Server-Diagnose des Testimages.
@@ -32,3 +32,8 @@ Wichtige Aufrufe im R4OS-Terminal:
 /UPDATESEARCH und /BENCHREAD dienen der lesenden Integration. Sie laden keine
 Pakete herunter, installieren nichts und schreiben keine Benchmarkdaten.
 Ein HTTP 200 im Health-Check belegt keine erfolgreiche Registrierung.
+
+Generation2 seit0.90.81 / Modul 0.1.11:
+Echter App2-Einstieg und R4XStart2:2, ausschliesslich Query2:2-Imports.
+Gemeinsame SDK-Fachhelfer und genaue Fehler-/Frist-/Besitzergrenzen stehen
+in README.md; die urspruenglichen unabhaengigen Fachorakel bleiben erhalten.

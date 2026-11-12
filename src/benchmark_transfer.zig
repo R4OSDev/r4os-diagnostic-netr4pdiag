@@ -6,20 +6,24 @@ const max_body = 64 * 1024 * 1024;
 const Kind = enum { host, spectra, snes };
 const Request = struct { kind: Kind, id: []const u8, path: []const u8 };
 
-pub fn run(app: *r4os.App, args: []const u8) i32 {
+pub fn run(app: *r4os.App2, args: []const u8) i32 {
     const sys = app.system();
     const request = parse(args) orelse {
         sys.println("NETR4P benchmark PUT: use /BENCHPUT=HOST|SPECTRA|SNES,ID,ABSOLUTE_PATH");
         return 2;
     };
-    var source = FileSource{ .sys = sys };
+    var source = FileSource{ .files = app.files() orelse return fail(&sys, "files unavailable"), .sys = sys, .clock = app.clock() catch return fail(&sys, "clock unavailable") };
     @memcpy(source.path[0..request.path.len], request.path);
     source.path_len = request.path.len;
-    var info: r4os.abi.FileInfo = .{};
-    const found = sys.fileInfoRaw(source.path[0..source.path_len :0].ptr, &info);
-    if (found <= 0 or info.exists == 0 or info.is_dir != 0 or info.size == 0 or info.size > max_body) {
-        sys.println("NETR4P benchmark PUT: file missing or outside size limit");
-        return 1;
+    const absolute = r4os.AbsoluteFilePath.parse(request.path) catch return fail(&sys, "invalid absolute source path");
+    source.metadata = switch (source.files.metadata(absolute.asZ())) {
+        .found => |value| value,
+        .missing => return fail(&sys, "source missing"),
+        .failure => return fail(&sys, "source metadata unavailable"),
+    };
+    const source_size = r4os.metadata2.fileSize(&source.metadata) orelse return fail(&sys, "source size unavailable");
+    if (source.metadata.flags & r4os.abi.file_metadata2_flag_directory != 0 or source_size == 0 or source_size > max_body) {
+        return fail(&sys, "file missing or outside size limit");
     }
     const services = app.services() orelse return fail(&sys, "service API unavailable");
     const client = r4os.server_access.Client{ .services = services };
@@ -51,9 +55,10 @@ pub fn run(app: *r4os.App, args: []const u8) i32 {
     var response = ResponseSink{};
     var stream: r4os.app_web.PostStream = undefined;
     const timeout = r4os.time_contract.timeoutFinite(r4os.time_contract.durationFromNanoseconds(90_000_000_000));
+    source.budget = r4os.rpc_budget.Budget.fromTimeout(source.clock.read, timeout) catch return fail(&sys, "source clock unavailable");
     var report = stream.init(&web, url, .{ .headers = &response_headers, .io = &io, .upload = &upload, .tls = &tls }, .{ .context = &response, .write = ResponseSink.write }, .{
         .request = .{ .method = .put, .redirect = .manual, .timeout = timeout, .headers = headers, .content_type = "application/json" },
-        .request_length = info.size,
+        .request_length = source_size,
         .reader = FileSource.read,
         .reader_context = &source,
     });
@@ -81,19 +86,47 @@ pub fn run(app: *r4os.App, args: []const u8) i32 {
     sys.printU64(@intFromBool(closed));
     sys.println("");
     return if (report.state == .complete and report.http_complete and closed and
-        report.request_body_confirmed == info.size and (report.status == 200 or report.status == 201)) 0 else 1;
+        report.request_body_confirmed == source_size and source.unchanged() and (report.status == 200 or report.status == 201)) 0 else 1;
 }
 
 const FileSource = struct {
     sys: r4os.r4sys.Context,
+    files: r4os.Files,
+    clock: r4os.stream_transfer.adapters.PlatformClock,
+    budget: r4os.rpc_budget.Budget = undefined,
+    metadata: r4os.abi.FileMetadata2 = .{},
+    confirmed: u64 = 0,
+    // This fixed source remains at one address until PostStream is closed.
+    // FileRead borrows the path and owns no invented file handle/lease.
     path: [max_path + 1]u8 = .{0} ** (max_path + 1),
     path_len: usize = 0,
 
+    fn unchanged(self: *@This()) bool {
+        const absolute = r4os.AbsoluteFilePath.parse(self.path[0..self.path_len]) catch return false;
+        const now = switch (self.files.metadata(absolute.asZ())) {
+            .found => |value| value,
+            else => return false,
+        };
+        if (r4os.metadata2.fileSize(&now) != r4os.metadata2.fileSize(&self.metadata) or now.flags & r4os.abi.file_metadata2_flag_directory != 0) return false;
+        if (r4os.metadata2.identity(&self.metadata)) |identity| {
+            const current = r4os.metadata2.identity(&now) orelse return false;
+            if (!std.meta.eql(identity.*, current.*)) return false;
+        }
+        if (self.metadata.flags & r4os.abi.file_metadata2_flag_content_revision_valid != 0 and
+            (now.flags & r4os.abi.file_metadata2_flag_content_revision_valid == 0 or now.content_revision != self.metadata.content_revision)) return false;
+        return true;
+    }
     fn read(raw: ?*anyopaque, offset: u64, output: []u8) i64 {
         const self: *@This() = @ptrCast(@alignCast(raw orelse return -3));
-        if (offset > std.math.maxInt(u32)) return -3;
-        const count = self.sys.fileReadAt(self.path[0..self.path_len :0].ptr, @intCast(offset), output);
-        return if (count < 0) -3 else count;
+        if (offset != self.confirmed or !self.unchanged()) return -3;
+        var source = r4os.stream_transfer.adapters.FileRead.fromContext2(self.sys.base.generation2.?, self.path[0..self.path_len :0].ptr, offset) catch return -3;
+        const driver: r4os.stream_transfer.adapters.Driver = .{ .sys = self.sys, .clock = &self.clock, .budget = &self.budget };
+        const progress = driver.read(output, 64 * 1024, r4os.stream_transfer.adapters.FileRead.step, &source, false) catch return -3;
+        if (!self.unchanged() or progress.error_code != 0) return -3;
+        const kind: r4os.stream_transfer.Outcome = @enumFromInt(progress.outcome);
+        if (kind != .complete and kind != .pending and kind != .eof) return -3;
+        self.confirmed += progress.bytes;
+        return @intCast(progress.bytes);
     }
 };
 

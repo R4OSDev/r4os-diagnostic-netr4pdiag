@@ -8,7 +8,7 @@ const App = struct {
     sys: r4os.r4sys.Context,
     net: r4os.r4net.Context,
 
-    fn init(r4_app: *r4os.App) ?App {
+    fn init(r4_app: *r4os.App2) ?App {
         return .{
             .sys = r4_app.system(),
             .net = r4_app.networkLowLevel() orelse return null,
@@ -31,9 +31,18 @@ const Totals = struct {
     dispatch_failures: u64 = 0,
 };
 
-pub fn r4_app_main(r4_app: *r4os.App) i32 {
+pub fn r4_app_main(r4_app: *r4os.App2) i32 {
     var app = App.init(r4_app) orelse return r4os.abi.err_no_group;
-    const args = trim(zSlice(app.sys.argsRaw()));
+    var arg_failure: r4os.arguments.Failure = .{};
+    var cursor = r4_app.argCursor(.{ .quotes = 0, .max_bytes = 4096 }, &arg_failure) catch return 2;
+    const token = (cursor.next() catch return 2);
+    const first_arg = if (token) |value| value.bytes(r4_app.args()) catch return 2 else "";
+    // The PUT grammar owns its comma-separated path, including spaces.
+    const args = if (startsWithIgnoreCase(first_arg, "/BENCHPUT=")) std.mem.trim(u8, r4_app.args(), " \t") else first_arg;
+    if (!startsWithIgnoreCase(first_arg, "/BENCHPUT=") and (cursor.next() catch return 2) != null) {
+        app.sys.println("NETR4P: expected one option");
+        return 2;
+    }
     if (equalsIgnoreCase(args, "/SERVERPROBE=UPDATES")) return serverProbe(r4_app, &app, .updates);
     if (equalsIgnoreCase(args, "/SERVERPROBE=BENCHMARKS")) return serverProbe(r4_app, &app, .benchmarks);
     if (equalsIgnoreCase(args, "/SERVERREGISTER=UPDATES")) return serverRegister(r4_app, &app, .updates);
@@ -51,6 +60,9 @@ pub fn r4_app_main(r4_app: *r4os.App) i32 {
         return 2;
     }
 
+    // DNS is lazy. Building a real independent R4P query activates it;
+    // the DNS service family resolver alone does not exercise this module.
+    if (selftest_mode and !activateDns(r4_app)) return 1;
     var detail: r4os.abi.NetDetailSnapshot = .{};
     _ = app.net.netDetailGet(0, &detail);
 
@@ -72,7 +84,20 @@ pub fn r4_app_main(r4_app: *r4os.App) i32 {
     return if (ok) 0 else 1;
 }
 
-fn tlsSelfTest(r4_app: *r4os.App, app: *const App) i32 {
+fn activateDns(app: *r4os.App2) bool {
+    const dev = app.devicesLowLevel() orelse return false;
+    var query: r4os.abi.DnsOp = .{ .id = 0x0181, .name_len = 10 };
+    @memcpy(query.name[0..10], "api81.test");
+    var input: r4os.abi.ProtocolBuffer = .{ .data = &query, .len = @sizeOf(@TypeOf(query)), .capacity = @sizeOf(@TypeOf(query)) };
+    var output: r4os.abi.ProtocolBuffer = .{};
+    const rc = dev.protocolDispatch("net.dns", r4os.abi.dns_op_build_a_query, &input, &output);
+    const expected = [_]u8{ 0x01, 0x81, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0, 5, 'a', 'p', 'i', '8', '1', 4, 't', 'e', 's', 't', 0, 0, 1, 0, 1 };
+    const ok = rc == 0 and query.result == 0 and query.payload_len == expected.len and std.mem.eql(u8, query.payload[0..expected.len], &expected);
+    app.system().println(if (ok) "NETR4P DNS query bytes: OK" else "NETR4P DNS query bytes: FAILED");
+    return ok;
+}
+
+fn tlsSelfTest(r4_app: *r4os.App2, app: *const App) i32 {
     const dev = r4_app.devicesLowLevel() orelse return 1;
     var input: [1]u8 = .{0};
     var output: [512]u8 = undefined;
@@ -89,7 +114,7 @@ fn tlsSelfTest(r4_app: *r4os.App, app: *const App) i32 {
     return if (ok) 0 else 1;
 }
 
-fn serverProbe(r4_app: *r4os.App, app: *const App, component: r4os.server_targets.Component) i32 {
+fn serverProbe(r4_app: *r4os.App2, app: *const App, component: r4os.server_targets.Component) i32 {
     const profile = r4os.server_profile.load(&app.sys) catch |err| {
         app.sys.write("NETR4P server profile: ");
         app.sys.println(@errorName(err));
@@ -134,7 +159,7 @@ fn serverProbe(r4_app: *r4os.App, app: *const App, component: r4os.server_target
     }
 }
 
-fn serverRegister(r4_app: *r4os.App, app: *const App, component: r4os.server_targets.Component) i32 {
+fn serverRegister(r4_app: *r4os.App2, app: *const App, component: r4os.server_targets.Component) i32 {
     const profile = r4os.server_profile.load(&app.sys) catch |err| {
         app.sys.write("NETR4P server profile: ");
         app.sys.println(@errorName(err));
@@ -178,7 +203,7 @@ fn serverRegister(r4_app: *r4os.App, app: *const App, component: r4os.server_tar
     return 1;
 }
 
-fn serverAccess(r4_app: *r4os.App, app: *const App, component: r4os.server_targets.Component) i32 {
+fn serverAccess(r4_app: *r4os.App2, app: *const App, component: r4os.server_targets.Component) i32 {
     const services = r4_app.services() orelse {
         app.sys.println("NETR4P R4SRV: service API unavailable");
         return 1;
@@ -209,7 +234,7 @@ fn serverAccess(r4_app: *r4os.App, app: *const App, component: r4os.server_targe
     return 1;
 }
 
-fn updateSearch(r4_app: *r4os.App, app: *const App) i32 {
+fn updateSearch(r4_app: *r4os.App2, app: *const App) i32 {
     const services = r4_app.services() orelse return 1;
     var connection = switch (services.open(update_contract.service_name)) {
         .connection => |value| value,
@@ -269,7 +294,7 @@ fn updateSearch(r4_app: *r4os.App, app: *const App) i32 {
     return 1;
 }
 
-fn benchmarkRead(r4_app: *r4os.App, app: *const App) i32 {
+fn benchmarkRead(r4_app: *r4os.App2, app: *const App) i32 {
     const services = r4_app.services() orelse return 1;
     const client = r4os.server_access.Client{ .services = services };
     const target = switch (client.ensure(.benchmarks)) {
@@ -584,24 +609,6 @@ fn fallbackDecisionName(decision: u8) []const u8 {
         r4os.abi.net_detail_fallback_decision_keep_recovery => "legacy-decision",
         else => "none",
     };
-}
-
-fn zSlice(value: [*:0]const u8) []const u8 {
-    var len: usize = 0;
-    while (value[len] != 0) : (len += 1) {}
-    return value[0..len];
-}
-
-fn trim(value: []const u8) []const u8 {
-    var start: usize = 0;
-    var end = value.len;
-    while (start < end and isSpace(value[start])) : (start += 1) {}
-    while (end > start and isSpace(value[end - 1])) : (end -= 1) {}
-    return value[start..end];
-}
-
-fn isSpace(ch: u8) bool {
-    return ch == ' ' or ch == '\t' or ch == '\r' or ch == '\n';
 }
 
 fn startsWithIgnoreCase(value: []const u8, prefix: []const u8) bool {
